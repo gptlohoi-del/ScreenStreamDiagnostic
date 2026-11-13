@@ -37,6 +37,8 @@ public final class DiagnosticLog {
                     stream.write(line.getBytes(StandardCharsets.UTF_8));
                 }
             } catch (IOException err) { Log.e("RTSP-DIAG", "Log write failed", err); }
+            // Mirror independently: an internal log write failure must not suppress the Downloads TXT.
+            SessionReport.appendEvent(line);
         }
     }
     public static void error(String tag, Throwable error) {

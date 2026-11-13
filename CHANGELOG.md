@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2 (2026-11-13)
+
+- Tự động tạo TXT riêng trong Downloads khi bắt đầu mỗi phiên phát, tự flush mỗi dòng.
+- Bật/tắt ghi TXT trong nhóm Nhật ký; Android 9 xin WRITE_EXTERNAL_STORAGE, Android 10+ dùng MediaStore.
+- Host/network/router snapshot: Android/build, mạng, IP, gateway, DHCP, DNS, RSSI, frequency, link speed; lặp lại trong phiên.
+- Log nhận dạng User-Agent (nếu có) từ RTSP client, kèm session/IP/transport/RTP/RTCP.
+- Nút copy địa chỉ RTSP, nút phát xanh / dừng đỏ, ẩn/mờ nút không khả dụng.
+- Tùy chọn cấp quyền vị trí để đọc SSID/BSSID; không đọc tọa độ GPS.
+
+
 ## 0.2.1 (2026-11-13)
 
 - RTCP Receiver Report parser (RFC 3550), hỗ trợ RTP/RTSP interleaved TCP và UDP RTCP.

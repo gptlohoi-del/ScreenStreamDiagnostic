@@ -41,3 +41,15 @@ E. Lặp lại trên ZTE 901ZT Android 9 và RC069L Android 12 (hai thiết bị
 `MediaFormat.KEY_MAX_FPS_TO_ENCODER` chỉ có từ Android 10 (API29); trên Android 9, `KEY_FRAME_RATE` là cấu hình encoder chứ không bảo đảm hard cap đầu ra. Vòng gửi RTP **không loại bỏ P-frame một cách tùy tiện**, vì việc đó có thể làm client mất khả năng giải mã cho đến IDR kế tiếp.
 
 Hãy kiểm tra thủ công chính sách tiết kiệm pin/tự quản lý ứng dụng riêng của ZTE, cài đặt chặn thiết bị ngang hàng (AP/client isolation) trên Wi-Fi, tín hiệu **tại từng điện thoại client**, và xem VLC có chế độ RTSP over TCP hay không.
+
+## v0.2.2: Log TXT tự động từng phiên
+
+- Mở **Nhật ký → Tự ghi TXT trong Downloads** (mặc định bật). Trên Android 9, cấp quyền ghi bộ nhớ lúc bắt đầu phát.
+- Mở **Files → Downloads** hoặc nút **Mở Downloads để xem TXT** trong app.
+- File ví dụ `RTSPDiagnostic_v0.2.2_20261113_204512_123_ZTE901ZT_a1b2c3d4.txt`.
+- File chứa `HOST ANDROID CHECK`, `HOST / WIFI / GATEWAY / ROUTER OBSERVATIONS`, và các sự kiện `[CLIENT]`, `[RTSP]`, `[HEALTH]`, `[RTCP_RR]`, `[NETWORK]`, `[HOST_ROUTER_SAMPLE]`.
+- Nếu có `[INCIDENT]` là thời gian bạn nhấn đánh dấu sự cố; dùng mốc đó để đối chiếu trạng thái từng client và gateway/Wi-Fi.
+- Không có `SESSION_ENDED` có thể chỉ ra dừng đột ngột. Không có RTCP RR **không** chứng minh mất gói hay không mất gói.
+- Chỉ có thể thu địa chỉ gateway và đặc trưng Wi-Fi nhìn từ điện thoại phát; các lựa chọn cấu hình cụ thể trên router không thể thu tự động bằng quyền thông thường. Muốn so sánh router cần lưu bản xuất log quản trị của router riêng.
+- Nếu được cấp quyền vị trí và bật dịch vụ Vị trí, log có thể ghi SSID/BSSID. Không có dữ liệu vị trí GPS.
+- TXT có thể chứa dữ liệu mạng nhạy cảm. Xem kỹ trước khi gửi cho người khác.

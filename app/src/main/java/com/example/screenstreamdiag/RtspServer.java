@@ -146,7 +146,7 @@ public final class RtspServer {
         volatile boolean closed,waitKey=true;
         volatile long lastOverflowLogMs,lastWaitingLogMs,playAtMs;
         volatile long lastControlMs=SystemClock.elapsedRealtime(),lastNoFeedbackLogMs,tcpWriteStartMs;
-        volatile boolean sentFirstKey;
+        volatile boolean sentFirstKey, userAgentLogged;
         Thread reader,sender;
         Client(Socket sock){socket=sock;ip=sock.getInetAddress().getHostAddress();}
         boolean playing(){return video.playing||audio.playing;}
@@ -172,6 +172,14 @@ public final class RtspServer {
                         int colon=line.indexOf(':');if(colon>0)headers.put(line.substring(0,colon).trim().toLowerCase(Locale.US),line.substring(colon+1).trim());
                     }
                     if(line==null)break;
+                    if(!userAgentLogged) {
+                        String agent=headers.get("user-agent");
+                        if(agent!=null && !agent.trim().isEmpty()) {
+                            userAgentLogged=true;
+                            DiagnosticLog.event("CLIENT","IDENTIFY ip="+ip+" session="+sessionId+
+                                    " userAgent="+agent.substring(0,Math.min(200,agent.length())));
+                        }
+                    }
                     int length=parseInt(headers.get("content-length"),0);
                     if(length<0||length>65536)throw new IOException("Bad RTSP body length");
                     while(length-->0)if(in.read()<0)throw new EOFException();
@@ -260,7 +268,7 @@ public final class RtspServer {
         }
         void respond(int code,String reason,String cseq,String extra,String body)throws IOException {
             byte[] data=body==null?new byte[0]:body.getBytes(StandardCharsets.UTF_8);
-            String h="RTSP/1.0 "+code+" "+reason+"\r\nCSeq: "+cseq+"\r\nServer: RTSPDiagnostic/0.2.1\r\n"+
+            String h="RTSP/1.0 "+code+" "+reason+"\r\nCSeq: "+cseq+"\r\nServer: RTSPDiagnostic/0.2.2\r\n"+
                     (extra==null?"":extra)+"Content-Length: "+data.length+"\r\n\r\n";
             synchronized(writeLock){
                 tcpWriteStartMs=SystemClock.elapsedRealtime();

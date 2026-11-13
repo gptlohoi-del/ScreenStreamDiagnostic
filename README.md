@@ -1,4 +1,4 @@
-# RTSP Diagnostic v0.2.1 — Android 9+ / ZTE 901ZT / RC069L
+# RTSP Diagnostic v0.2.2 — Android 9+ / ZTE 901ZT / RC069L
 
 **Mã nguồn đầy đủ** của một ứng dụng Android Java phát màn hình H.264 qua RTSP cho 1–5 VLC client trong LAN, tùy chọn âm thanh AAC, tự kiểm tra các cài đặt Android ảnh hưởng tới phát, ghi log chẩn đoán và xuất ZIP.
 
@@ -8,7 +8,21 @@
 - **Độc lập với ScreenStream chính thức:** đây là dự án thử nghiệm được xây dựng theo yêu cầu, không phải fork của ScreenStream.
 - **Trạng thái kiểm thử:** đã biên dịch và chạy **JVM RTSP smoke test** qua TCP/UDP với RTCP Receiver Reports. **Chưa xác nhận** build Android APK thực tế hoặc thử trên thiết bị ZTE/RC thật. GitHub Actions sẽ xác minh build Android.
 
-## Điểm mới v0.2.1
+## Điểm mới v0.2.2 — Tự động lưu TXT cho mỗi phiên stream
+
+- **Tự ghi TXT mặc định bật**: mỗi khi được cấp quyền chia sẻ màn hình và service bắt đầu, ứng dụng tạo **một file `.txt` riêng** ngay tại thư mục **Downloads/**, ví dụ `RTSPDiagnostic_v0.2.2_20261113_204512_123_ZTE901ZT_a1b2c3d4.txt`. Tên gồm phiên bản, giờ địa phương đến mili-giây, model đã làm sạch và chuỗi ngẫu nhiên để tránh trùng.
+- Ghi **liên tục và flush sau mỗi sự kiện**, nên những gì đã ghi vẫn có thể đọc được nếu Android đột ngột kết thúc ứng dụng. Khi dừng phát bình thường sẽ có dòng `SESSION_ENDED`. Nếu file không có dòng này, cần nghi ngờ tiến trình bị dừng hoặc thiết bị mất nguồn (không phải kết luận chắc chắn).
+- **Bật/tắt:** mở phần **Ghi TXT tự động / xuất nhật ký** trên màn hình chính, dùng công tắc `Tự ghi TXT trong Downloads mỗi lần phát`. Mặc định **bật**. Tắt khi đang phát sẽ đóng file đang ghi; bật lại sẽ áp dụng từ phiên mới.
+- **Android 9:** lần đầu ứng dụng xin `WRITE_EXTERNAL_STORAGE` để ghi trực tiếp vào Downloads công khai. Nếu từ chối, có thể chọn không ghi TXT và vẫn phát. **Android 10+:** lưu qua `MediaStore.Downloads`, không cần quyền truy cập toàn bộ bộ nhớ. Trạng thái/tên file hoặc lỗi ghi sẽ hiện ngay dưới link RTSP.
+- **Thông tin tự ghi:** cấu hình phát, Android/build/CPU, encoder/MediaProjection, IP/giao diện mạng, default network, gateway/router DHCP, DNS, Wi-Fi RSSI/frequency/link rate, tiết kiệm pin, RAM/nhiệt, client IP + cổng + `User-Agent` nếu RTSP client gửi, RTSP methods/transport, RTP counters, RTCP receiver report nếu được gửi, network changes và health snapshot mỗi ~60 giây.
+- **SSID/BSSID:** dùng nút *Cấp quyền đọc tên Wi-Fi / BSSID* ở phần Nhật ký. Android yêu cầu quyền vị trí và thường phải bật dịch vụ Vị trí; ứng dụng **không đọc tọa độ GPS**. Nếu không cấp, các thông tin mạng ít nhạy cảm hơn vẫn được ghi.
+- **Không thể đọc:** cài đặt nội bộ router (QoS, Smart Connect, DFS, band steering, client isolation), tên/model/phiên bản Android của client (trừ khi client tự khai qua `User-Agent`), chất lượng giải mã VLC. Những mục này cần quyền quản trị router hoặc chẩn đoán phía client.
+- **Giao diện:** link RTSP có nút **Copy link**; hai nút **Phát màu xanh** / **Dừng màu đỏ** luân phiên sáng-mờ theo trạng thái. Các nhóm chi tiết vẫn thu gọn.
+- **Riêng tư:** TXT chứa IP và có thể chứa SSID/BSSID; hãy xem lại trước khi chia sẻ. Không lưu nội dung ảnh màn hình hoặc âm thanh.
+
+**Cách tìm file:** Mở **Files / Quản lý tệp → Downloads** trên điện thoại, tìm `RTSPDiagnostic_v0.2.2_*.txt`. Đọc trực tiếp bằng trình xem văn bản hoặc gửi file cho người phân tích. Chức năng xuất ZIP nhật ký cũ vẫn giữ nguyên và độc lập với TXT theo phiên.
+
+## Điểm mới v0.2.2
 
 1. **RTCP Receiver Reports (RR)**: nhận và giải mã RR qua **UDP RTCP** hoặc **TCP interleaved**, phân tích tỷ lệ mất gói (fraction lost), tổng số gói mất và jitter. Có log `[RTCP_RR]` theo client, track âm thanh/hình. **Không có RR nghĩa là chưa đủ bằng chứng, không đồng nghĩa kết nối tốt hoặc xấu.** Một số VLC client không gửi RR.
 2. **Cảnh báo `PLAY_UNCONFIRMED`**: khi RTSP vẫn ở `PLAY` nhưng không có dữ liệu phản hồi xác nhận, ứng dụng ghi rõ không thể xác nhận video thực sự được VLC giải mã. Không tự đóng UDP chỉ vì thiếu RR (tránh làm gián đoạn VLC đang xem bình thường).
@@ -20,7 +34,7 @@
 8. **Kiểm thử giao thức trong GitHub Actions**: `tools/rtsp-smoke.sh` chạy bằng Java 17 trước unit test và APK build.
 9. **Giữ các chức năng v0.2.0**: giao diện một màn hình (bốn khối thu gọn), icon riêng, lựa chọn âm thanh, kiểm tra Android, xuất ZIP, tên APK có phiên bản.
 
-> **Không tuyên bố đã sửa hoàn toàn lỗi VLC tự out.** v0.2.1 giúp xác định rõ hơn lỗi do mạng/RTP, phiên RTSP hay H.264. Các thông số RR cũng chỉ tồn tại nếu client gửi báo cáo. Đặc biệt, UDP send thành công vẫn không chứng minh gói đã đến hoặc VLC đang giải mã.
+> **Không tuyên bố đã sửa hoàn toàn lỗi VLC tự out.** v0.2.2 giúp xác định rõ hơn lỗi do mạng/RTP, phiên RTSP hay H.264. Các thông số RR cũng chỉ tồn tại nếu client gửi báo cáo. Đặc biệt, UDP send thành công vẫn không chứng minh gói đã đến hoặc VLC đang giải mã.
 
 ## Tương thích và âm thanh
 
@@ -37,12 +51,12 @@
 
 ## Giao diện một màn hình
 
-Trên đầu là trạng thái, URL `rtsp://<IPv4-WiFi>:8554/live`, nút Phát / Dừng / Đánh dấu sự cố. Các nhóm chỉ hiển thị nội dung khi bấm mở:
+Trên đầu là trạng thái, URL `rtsp://<IPv4-WiFi>:8554/live` và nút **Copy link**, nút **Phát màu xanh** / **Dừng màu đỏ** (nút vừa nhấn sẽ mờ, nút còn lại nổi bật), **Đánh dấu sự cố**, và dòng trạng thái file TXT. Các nhóm chỉ hiển thị nội dung khi bấm mở:
 
 - **Cấu hình hình ảnh & âm thanh:** 15/20/25 FPS; 1/2/3 Mbps; scale 100/75/50%; nguồn âm thanh (mặc định Tắt).
 - **Client / RTSP:** IP và session ID, track TCP/UDP, trạng thái PLAY (không phải xác nhận VLC đang xem), byte RTP, gói RTP, RTCP RR, jitter và loss nếu có.
 - **Android / cảnh báo:** Wi-Fi/IP/RSSI, H.264 encoder, tiết kiệm pin/Doze, pin/nhiệt, RAM, khóa màn hình, quyền micro, một số cài đặt khác. Các mục tùy biến ZTE hoặc router không thể tự đọc phải xem thủ công.
-- **Nhật ký:** hiển thị log gần nhất, xuất ZIP để phân tích.
+- **Nhật ký:** công tắc tự ghi TXT vào Downloads từng phiên, cấp quyền đọc SSID/BSSID (tùy chọn), hiển thị log gần nhất, xuất ZIP để phân tích.
 
 ## Tạo APK tự động bằng GitHub Actions
 
@@ -52,7 +66,7 @@ Trên đầu là trạng thái, URL `rtsp://<IPv4-WiFi>:8554/live`, nút Phát /
    ```bash
    git init
    git add .
-   git commit -m "RTSP Diagnostic v0.2.1"
+   git commit -m "RTSP Diagnostic v0.2.2"
    git branch -M main
    git remote add origin https://github.com/<TEN-TAI-KHOAN>/<TEN-REPO>.git
    git push -u origin main
@@ -60,8 +74,8 @@ Trên đầu là trạng thái, URL `rtsp://<IPv4-WiFi>:8554/live`, nút Phát /
 
 3. Trong GitHub, mở **Actions → Build RTSP Diagnostic APK → Run workflow** hoặc đẩy commit lên `main`.
 4. Workflow dùng **`android-actions/setup-android@v4`**, JDK 17, Gradle 8.9, Android SDK API 35. Chạy JVM smoke test, `:app:testDebugUnitTest`, `:app:assembleDebug`.
-5. Tải artifact **`RTSPDiagnostic-v0.2.1-debug`**, giải nén để nhận **`RTSPDiagnostic-v0.2.1-debug.apk`**.
-6. Tạo tag `v0.2.1` để đưa APK lên **GitHub Releases**. Tag phải khớp `versionName`.
+5. Tải artifact **`RTSPDiagnostic-v0.2.2-debug`**, giải nén để nhận **`RTSPDiagnostic-v0.2.2-debug.apk`**.
+6. Tạo tag `v0.2.2` để đưa APK lên **GitHub Releases**. Tag phải khớp `versionName`.
 
 ### Ký APK release ổn định để cập nhật không mất log
 
@@ -74,7 +88,7 @@ APK debug được ký bằng khóa debug do runner tạo, có thể khác giữ
 | `ANDROID_KEY_ALIAS` | Alias trong JKS |
 | `ANDROID_KEY_PASSWORD` | Mật khẩu alias |
 
-Nếu đủ secrets, workflow build thêm **`RTSPDiagnostic-v0.2.1-release.apk`**. Giữ bí mật và sao lưu keystore; không commit file keystore vào GitHub. Để cài đè bản cũ cần **cùng applicationId và cùng khóa ký**, với versionCode mới tăng dần. Không thể cài đè APK debug bằng APK release có chữ ký khác — hãy xuất log trước khi gỡ app cũ.
+Nếu đủ secrets, workflow build thêm **`RTSPDiagnostic-v0.2.2-release.apk`**. Giữ bí mật và sao lưu keystore; không commit file keystore vào GitHub. Để cài đè bản cũ cần **cùng applicationId và cùng khóa ký**, với versionCode mới tăng dần. Không thể cài đè APK debug bằng APK release có chữ ký khác — hãy xuất log trước khi gỡ app cũ.
 
 ## Kiểm tra khi VLC tự out
 
@@ -106,7 +120,7 @@ Nếu đủ secrets, workflow build thêm **`RTSPDiagnostic-v0.2.1-release.apk`*
 
 ```text
 .github/workflows/android-apk.yml  # github build/test/release - setup-android@v4
-app/build.gradle                   # versionCode=3, versionName=0.2.1
+app/build.gradle                   # versionCode=4, versionName=0.2.2
 app/src/main/AndroidManifest.xml
 app/src/main/java/com/example/screenstreamdiag/
   MainActivity.java                # giao diện một màn hình, 4 mục thu gọn, đánh dấu IP
@@ -117,7 +131,9 @@ app/src/main/java/com/example/screenstreamdiag/
   AacRtp.java                      # AAC AU RTP
   H264.java                        # NAL parser
   DeviceInspector.java             # kiểm tra Android và cảnh báo
-  DiagnosticLog.java               # log xoay vòng, xuất ZIP
+  DiagnosticLog.java               # log xoay vòng, xuất ZIP, chuyển sự kiện vào TXT
+  SessionReport.java               # TXT mỗi phiên, Downloads Android 9 / MediaStore 10+
+  NetworkSnapshot.java             # IP, Wi-Fi, gateway/DNS, network capability
 app/src/test/...                   # unit tests H.264 / AAC / RTCP
  tools/rtsp-smoke.sh               # biên dịch và kiểm thử RTSP qua Java 17
  tools/RtspSmoke.java

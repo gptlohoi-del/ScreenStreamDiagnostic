@@ -49,6 +49,7 @@ public final class CaptureService extends Service {
     private ConnectivityManager cm;
     private ConnectivityManager.NetworkCallback networkCallback;
     private long startedAt;
+    private long lastNetworkSnapshotMs;
     private int lastWarningCount = -1;
     private long lastWarningNotificationMs;
     private volatile int currentWidth,currentHeight,currentFps,currentBitrate;
@@ -87,6 +88,10 @@ public final class CaptureService extends Service {
         int fps=Math.max(10,Math.min(30,intent.getIntExtra(EXTRA_FPS,20)));
         int bitrate=Math.max(500000,Math.min(4000000,intent.getIntExtra(EXTRA_BITRATE,2000000)));
         int scale=Math.max(50,Math.min(100,intent.getIntExtra(EXTRA_SCALE,100)));
+        String reportStatus=SessionReport.begin(this,"fps="+fps+" bitrate="+bitrate+
+                " scalePercent="+scale+" audio="+selectedAudio+" port="+RtspServer.PORT+
+                " maxClients="+RtspServer.MAX_CLIENTS);
+        DiagnosticLog.event("SESSION_TXT",reportStatus);
         try { startCapture(resultCode,resultData,fps,bitrate,scale); }
         catch (Exception e) {
             DiagnosticLog.error("CAPTURE_START_FAILED",e);
@@ -218,9 +223,11 @@ public final class CaptureService extends Service {
             networkCallback=new ConnectivityManager.NetworkCallback() {
                 @Override public void onAvailable(Network network) {
                     DiagnosticLog.event("NETWORK","default network AVAILABLE network="+network);
+                    DiagnosticLog.event("NETWORK_DETAIL",NetworkSnapshot.capture(CaptureService.this).replace('\n',';'));
                 }
                 @Override public void onLost(Network network) {
                     DiagnosticLog.event("NETWORK","default network LOST network="+network);
+                    DiagnosticLog.event("NETWORK_DETAIL",NetworkSnapshot.capture(CaptureService.this).replace('\n',';'));
                 }
                 @Override public void onCapabilitiesChanged(Network network,NetworkCapabilities caps) {
                     DiagnosticLog.event("NETWORK","capabilities changed transportWiFi="+
@@ -307,6 +314,10 @@ public final class CaptureService extends Service {
                     DiagnosticLog.event("HEALTH",detail+" "+latestClients.replace('\n',';'));
                     DeviceInspector.Report report=DeviceInspector.inspect(this);
                     if(report.warnings>0)DiagnosticLog.event("DEVICE_WARNINGS",report.text.replace('\n',';'));
+                    if(now-lastNetworkSnapshotMs>=60000){
+                        lastNetworkSnapshotMs=now;
+                        DiagnosticLog.event("HOST_ROUTER_SAMPLE",NetworkSnapshot.capture(this).replace('\n',';'));
+                    }
                     if (report.warnings > 0 && (report.warnings != lastWarningCount || now-lastWarningNotificationMs>120000)) {
                         lastWarningNotificationMs=now;
                         getSystemService(NotificationManager.class).notify(8,
@@ -353,6 +364,7 @@ public final class CaptureService extends Service {
         if(cpuLock!=null&&cpuLock.isHeld()){cpuLock.release();cpuLock=null;}
         if(status.startsWith("Đang phát"))status="Đã dừng";
         DiagnosticLog.event("SERVICE","CLEANUP completed");
+        SessionReport.finish("Service destroyed / capture stopped");
         super.onDestroy();
     }
     @Override public IBinder onBind(Intent intent) { return null; }
