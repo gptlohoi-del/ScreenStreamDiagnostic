@@ -53,7 +53,7 @@ public final class CaptureService extends Service {
         DiagnosticLog.init(this);
         getSystemService(NotificationManager.class).createNotificationChannel(
                 new NotificationChannel(CHANNEL,"Truyền màn hình RTSP",NotificationManager.IMPORTANCE_LOW));
-        DiagnosticLog.event("SERVICE","onCreate pid="+Process.myPid()+" Android="+Build.VERSION.SDK_INT);
+        DiagnosticLog.event("SERVICE","onCreate pid="+android.os.Process.myPid()+" Android="+Build.VERSION.SDK_INT);
     }
     @Override public int onStartCommand(Intent intent,int flags,int startId) {
         startForeground(8,notification("Đang chuẩn bị phát RTSP"));
