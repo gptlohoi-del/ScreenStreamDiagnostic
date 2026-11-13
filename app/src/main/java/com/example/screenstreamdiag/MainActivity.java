@@ -2,6 +2,7 @@ package com.example.screenstreamdiag;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -17,6 +18,10 @@ import android.view.WindowInsets;
 import android.view.ViewGroup;
 import android.widget.*;
 import java.io.*;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -84,8 +89,8 @@ public final class MainActivity extends Activity {
         Button stop=button("■ Dừng phát",v->stopCapture());
         actions.addView(start,new LinearLayout.LayoutParams(0,dp(54),1));
         actions.addView(stop,new LinearLayout.LayoutParams(0,dp(54),1));root.addView(actions);
-        root.addView(button("⚑ Đánh dấu client vừa bị thoát",v->markIncident()));
-        configSection=new ExpandSection(root,"⚙  Cấu hình hình ảnh & âm thanh",true);
+        root.addView(button("⚑ Đánh dấu client bị mất hình / out",v->markIncident()));
+        configSection=new ExpandSection(root,"⚙  Cấu hình hình ảnh & âm thanh",false);
         fps=spinner(configSection.content,"Tần số khung hình",new String[]{"15 FPS","20 FPS","25 FPS"},"fps",1);
         bitrate=spinner(configSection.content,"Bitrate H.264",new String[]{"1 Mbps","2 Mbps","3 Mbps"},"bitrate",1);
         scale=spinner(configSection.content,"Độ phân giải (giới hạn 720p)",new String[]{"100%","75%","50%"},"scale",0);
@@ -181,9 +186,22 @@ public final class MainActivity extends Activity {
         if(manual)DiagnosticLog.event("MANUAL_DEVICE_CHECK","warnings="+r.warnings+" "+r.text.replace('\n',';'));
     }
     private void markIncident(){
-        DiagnosticLog.event("INCIDENT","USER MARKED DISCONNECT status="+CaptureService.summary()+
-                " stats="+CaptureService.clientSummary().replace('\n',';'));
-        toast("Đã lưu mốc sự cố vào log.");
+        String snapshot=CaptureService.clientSummary();
+        LinkedHashSet<String> ips=new LinkedHashSet<>();
+        Matcher matcher=Pattern.compile("\\bip=([0-9.]+)").matcher(snapshot);
+        while(matcher.find())ips.add(matcher.group(1));
+        ArrayList<String> choices=new ArrayList<>();
+        choices.add("Không rõ / tất cả client");
+        choices.addAll(ips);
+        new AlertDialog.Builder(this).setTitle("Client nào vừa bị mất hình / out?")
+            .setItems(choices.toArray(new String[0]),(dialog,which)->{
+                String selected=which==0?"unknown-or-all":choices.get(which);
+                DiagnosticLog.event("INCIDENT","USER_MARKED client="+selected+
+                        " status="+CaptureService.summary()+
+                        " stats="+snapshot.replace('\n',';'));
+                toast("Đã ghi mốc lỗi cho "+selected+". Hãy xuất ZIP khi cần.");
+            })
+            .setNegativeButton("Hủy",null).show();
     }
     private void openSettings(String action){
         try{startActivity(new Intent(action));}catch(Exception e){toast("Thiết bị không hỗ trợ trang cài đặt này.");}

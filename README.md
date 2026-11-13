@@ -1,106 +1,127 @@
-# RTSP Diagnostic 0.2.0 — Android 9+ / ZTE 901ZT / RC069L
+# RTSP Diagnostic v0.2.1 — Android 9+ / ZTE 901ZT / RC069L
 
-Ứng dụng Android Java **phát màn hình trực tiếp qua RTSP** (H.264) cho 1–5 thiết bị VLC trong cùng LAN; có **lựa chọn truyền âm thanh AAC**, kiểm tra Android/Wi-Fi, nhật ký theo phiên client và nút đánh dấu sự cố. Mã nguồn dựa trên dự án thử nghiệm RTSP Diagnostic trước đó trong cuộc trò chuyện; **không** phải fork hay bản chính thức của ScreenStream.
+**Mã nguồn đầy đủ** của một ứng dụng Android Java phát màn hình H.264 qua RTSP cho 1–5 VLC client trong LAN, tùy chọn âm thanh AAC, tự kiểm tra các cài đặt Android ảnh hưởng tới phát, ghi log chẩn đoán và xuất ZIP.
 
-> **Trạng thái:** mã nguồn thử nghiệm. Đã kiểm tra cấu trúc repo và kiểm tra Java/RTP độc lập nơi có thể, nhưng **chưa chạy được một bản build Gradle Android hoặc kiểm thử trên ZTE 901ZT/RC069L thật trong môi trường tạo repo**. GitHub Actions là bước xác nhận build chính thức. Có thể phát sinh vấn đề tùy ROM, codec, VLC, mạng hoặc phiên bản Android.
+- **Thiết bị ưu tiên:** ZTE 901ZT, Android 9 (API 28).
+- **Thiết bị phụ:** RC069L, Android 12 (API 31).
+- **Khả năng mở rộng:** minSdk 26, compile/target SDK 35; **không cam kết** chạy đúng trên mọi điện thoại/ROM Android chưa kiểm thử.
+- **Độc lập với ScreenStream chính thức:** đây là dự án thử nghiệm được xây dựng theo yêu cầu, không phải fork của ScreenStream.
+- **Trạng thái kiểm thử:** đã biên dịch và chạy **JVM RTSP smoke test** qua TCP/UDP với RTCP Receiver Reports. **Chưa xác nhận** build Android APK thực tế hoặc thử trên thiết bị ZTE/RC thật. GitHub Actions sẽ xác minh build Android.
 
-## Nền tảng và âm thanh
+## Điểm mới v0.2.1
 
-| Hệ điều hành | Video H.264 | Không âm thanh | Micro AAC | Âm thanh phát từ ứng dụng AAC |
+1. **RTCP Receiver Reports (RR)**: nhận và giải mã RR qua **UDP RTCP** hoặc **TCP interleaved**, phân tích tỷ lệ mất gói (fraction lost), tổng số gói mất và jitter. Có log `[RTCP_RR]` theo client, track âm thanh/hình. **Không có RR nghĩa là chưa đủ bằng chứng, không đồng nghĩa kết nối tốt hoặc xấu.** Một số VLC client không gửi RR.
+2. **Cảnh báo `PLAY_UNCONFIRMED`**: khi RTSP vẫn ở `PLAY` nhưng không có dữ liệu phản hồi xác nhận, ứng dụng ghi rõ không thể xác nhận video thực sự được VLC giải mã. Không tự đóng UDP chỉ vì thiếu RR (tránh làm gián đoạn VLC đang xem bình thường).
+3. **Giám sát socket TCP**: watchdog ghi `TCP_WRITE_STALL` và đóng socket nếu một lần ghi TCP kẹt quá 12 giây; dọn phiên RTSP chưa PLAY và không có request sau 90 giây. Phân biệt sự kiện `RTSP_KEEPALIVE`.
+4. **Encoder log chi tiết**: `[ENCODER] VIDEO_KEYFRAME` (PTS, kích thước, khoảng cách giữa keyframe), `maxPtsGapMs`, `keyframes` trong bản tin sức khỏe `[HEALTH]`.
+5. **Kiểm soát FPS trên Android 10+**: thử cấu hình `MediaFormat.KEY_MAX_FPS_TO_ENCODER`. Android 9 không có khóa này, nên chỉ là hint theo `KEY_FRAME_RATE` và có thể vượt FPS tùy codec. Nếu codec từ chối khóa tùy chọn, ứng dụng thử lại cấu hình cơ bản. Không tùy tiện loại bỏ P-frame H.264 (dễ gây hình hỏng).
+6. **Thông báo chiếm cổng 8554**: bắt `BindException`, báo `PORT_IN_USE` và gợi ý đóng ứng dụng khác đang chiếm cổng.
+7. **Mốc sự cố có lựa chọn client**: nhấn *Đánh dấu client bị mất hình / out*, chọn IP hoặc *Tất cả / không rõ*; app ghi snapshot cho đúng thời điểm.
+8. **Kiểm thử giao thức trong GitHub Actions**: `tools/rtsp-smoke.sh` chạy bằng Java 17 trước unit test và APK build.
+9. **Giữ các chức năng v0.2.0**: giao diện một màn hình (bốn khối thu gọn), icon riêng, lựa chọn âm thanh, kiểm tra Android, xuất ZIP, tên APK có phiên bản.
+
+> **Không tuyên bố đã sửa hoàn toàn lỗi VLC tự out.** v0.2.1 giúp xác định rõ hơn lỗi do mạng/RTP, phiên RTSP hay H.264. Các thông số RR cũng chỉ tồn tại nếu client gửi báo cáo. Đặc biệt, UDP send thành công vẫn không chứng minh gói đã đến hoặc VLC đang giải mã.
+
+## Tương thích và âm thanh
+
+| Thiết bị / Android | Video H.264 | Không âm thanh | Micro AAC | Ghi âm phát lại ứng dụng AAC |
 |---|---|---|---|---|
-| Android 9 / API 28 (ZTE 901ZT) | Có | Có (mặc định) | Có (cấp quyền `RECORD_AUDIO`) | **Không** (API chưa hỗ trợ) |
-| Android 12 / API 31 (RC069L) | Có | Có | Có | Có, **chỉ khi ứng dụng nguồn cho phép bắt âm thanh** |
-| Android 10+ khác | Dự kiến | Có | Có | Tùy chính sách Android/ứng dụng nguồn/ROM |
+| ZTE 901ZT, Android 9 | Có | Có (mặc định) | Có (cần RECORD_AUDIO) | **Không**, Android 9 chưa hỗ trợ |
+| RC069L, Android 12 | Có | Có | Có | Có **nếu ứng dụng nguồn cho phép** |
+| Android 10+ khác | Dự kiến, cần thử máy | Có | Có | Phụ thuộc ROM, quyền và nội dung nguồn |
 
-- Chỉ chọn **một** nguồn âm thanh tại một thời điểm: Tắt / Micro / Âm thanh ứng dụng. Không trộn hai nguồn.
-- Âm thanh ứng dụng cần Android 10+ và sự đồng ý MediaProjection + `RECORD_AUDIO`. Một số ứng dụng/nhóm nội dung không cho phép ghi âm lại nên phía client có thể im lặng dù RTSP vẫn phát video.
-- Video H.264/AAC-LC mono 44.1 kHz, AAC 64 kbps; RTSP video trackID=0, audio trackID=1, RTP over TCP interleaved hoặc UDP unicast (do VLC yêu cầu).
-- **LAN tin cậy**: RTSP mặc định không có xác thực hay TLS. Không mở port 8554 ra Internet.
+- Chỉ chọn **một** nguồn âm thanh: Tắt / Micro / Âm thanh ứng dụng. Chỉ cấp quyền micro khi cần thu âm.
+- Âm thanh: AAC-LC mono 44.1 kHz, 64 kbps. Server đưa track âm thanh vào SDP khi khởi tạo audio thành công.
+- Luồng video: H.264; video track `trackID=0`, audio track `trackID=1`; RTP TCP interleaved hoặc UDP unicast theo yêu cầu SETUP của client.
+- **Không ghi lại nội dung hình ảnh hoặc âm thanh** trong log. Log chứa IP nội bộ và thông tin thiết bị, nên xem trước khi chia sẻ.
 
 ## Giao diện một màn hình
 
-Màn hình chính có địa chỉ `rtsp://<IPv4-WiFi-của-máy-phát>:8554/live`, tình trạng phát, nút **Phát / Dừng / Đánh dấu sự cố**, và bốn khối mở/đóng bằng cách nhấn:
+Trên đầu là trạng thái, URL `rtsp://<IPv4-WiFi>:8554/live`, nút Phát / Dừng / Đánh dấu sự cố. Các nhóm chỉ hiển thị nội dung khi bấm mở:
 
-1. **Cấu hình hình ảnh & âm thanh**: 15–25 FPS, 1–3 Mbps, chất lượng 100/75/50%, nguồn âm thanh.
-2. **Client / trạng thái RTSP**: số kết nối, RTSP session ID, track TCP/UDP, byte gửi, dropped, thời gian gửi video cuối.
-3. **Kiểm tra Android / cảnh báo**: tiết kiệm pin, Doze, khóa/tắt màn hình, Wi-Fi/RSSI, pin/nhiệt, bộ nhớ, tự xoay, timeout màn hình, quyền micro và dữ liệu nền. Không thể tự đọc tối ưu pin riêng của ZTE, client isolation router hay tín hiệu tại client.
-4. **Nhật ký và xuất ZIP**: log hai file xoay vòng, mốc sự cố, báo cáo thiết bị.
+- **Cấu hình hình ảnh & âm thanh:** 15/20/25 FPS; 1/2/3 Mbps; scale 100/75/50%; nguồn âm thanh (mặc định Tắt).
+- **Client / RTSP:** IP và session ID, track TCP/UDP, trạng thái PLAY (không phải xác nhận VLC đang xem), byte RTP, gói RTP, RTCP RR, jitter và loss nếu có.
+- **Android / cảnh báo:** Wi-Fi/IP/RSSI, H.264 encoder, tiết kiệm pin/Doze, pin/nhiệt, RAM, khóa màn hình, quyền micro, một số cài đặt khác. Các mục tùy biến ZTE hoặc router không thể tự đọc phải xem thủ công.
+- **Nhật ký:** hiển thị log gần nhất, xuất ZIP để phân tích.
 
-## Sửa đổi liên quan lỗi mất kết nối
+## Tạo APK tự động bằng GitHub Actions
 
-- Cố gắng bật `MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER = 500000` µs cho encoder Surface để giảm khoảng trống video khi màn hình tĩnh. Nếu ROM/codec từ chối cấu hình tùy chọn này, thử lại không có nó và ghi `REPEAT_PREVIOUS_FRAME_UNSUPPORTED`.
-- Khi client bắt đầu `PLAY` hoặc hàng đợi tràn, yêu cầu encoder phát keyframe (`PARAMETER_KEY_REQUEST_SYNC_FRAME`) với giới hạn tần suất.
-- Ghi `WAITING_KEYFRAME`, `FIRST_VIDEO_KEYFRAME`, `SLOW_CLIENT`, `AUDIO_FAILED`, `ENCODER_STALL` cùng số liệu theo session. Không suy đoán nguyên nhân VLC nếu không có dữ liệu.
-- Android phiên bản mới cần người dùng cho phép MediaProjection mỗi phiên; không cố tự vượt qua hệ thống.
+1. Tạo repository trên GitHub, ví dụ `ScreenStreamDiagnostic`.
+2. Giải nén ZIP **rồi upload toàn bộ file/thư mục bên trong**, kể cả `.github/workflows/android-apk.yml` và `tools/` (không chỉ upload file ZIP). Dùng Git trên máy tính để không mất file ẩn:
 
-## GitHub: đưa toàn bộ repo lên và tạo APK
+   ```bash
+   git init
+   git add .
+   git commit -m "RTSP Diagnostic v0.2.1"
+   git branch -M main
+   git remote add origin https://github.com/<TEN-TAI-KHOAN>/<TEN-REPO>.git
+   git push -u origin main
+   ```
 
-1. Tạo repository trống, ví dụ `ScreenStreamDiagnostic`, trên GitHub.
-2. Upload **nội dung bên trong thư mục repo này** lên repository, **bao gồm thư mục ẩn `.github/workflows`**; không upload file ZIP làm tệp duy nhất. Có thể dùng giao diện GitHub **Add file → Upload files** hoặc `git add .; git commit; git push`.
-3. Trong GitHub, mở **Actions → Build RTSP Diagnostic APK → Run workflow** (hoặc push nhánh `main`).
-4. Workflow sử dụng chính xác `android-actions/setup-android@v4`, JDK 17, Gradle 8.9, Android API 35, chạy `:app:testDebugUnitTest` rồi `:app:assembleDebug`.
-5. Tải artifact `RTSPDiagnostic-v0.2.0-debug`, giải nén và cài `RTSPDiagnostic-v0.2.0-debug.apk`.
-6. Tag `v0.2.0` trên GitHub để workflow tạo GitHub Release và gắn APK tương ứng.
+3. Trong GitHub, mở **Actions → Build RTSP Diagnostic APK → Run workflow** hoặc đẩy commit lên `main`.
+4. Workflow dùng **`android-actions/setup-android@v4`**, JDK 17, Gradle 8.9, Android SDK API 35. Chạy JVM smoke test, `:app:testDebugUnitTest`, `:app:assembleDebug`.
+5. Tải artifact **`RTSPDiagnostic-v0.2.1-debug`**, giải nén để nhận **`RTSPDiagnostic-v0.2.1-debug.apk`**.
+6. Tạo tag `v0.2.1` để đưa APK lên **GitHub Releases**. Tag phải khớp `versionName`.
 
-**Lưu ý về chữ ký APK:** APK debug do runner GitHub tự ký bằng debug keystore; các lần build có thể dùng **khóa khác nhau**, dẫn tới lỗi cập nhật ứng dụng. Nếu không cài đè được, xuất log trước rồi gỡ phiên bản cũ (gỡ app sẽ xóa nhật ký nội bộ), sau đó cài bản mới. Để cập nhật dài hạn không mất dữ liệu, sử dụng APK release với **một khóa ký cố định**.
+### Ký APK release ổn định để cập nhật không mất log
 
-### Tùy chọn ký release bằng GitHub Secrets
+APK debug được ký bằng khóa debug do runner tạo, có thể khác giữa các lần build. Nếu cần cài đè lâu dài mà không xóa dữ liệu, tạo **keystore release ổn định** trên máy bạn và thiết lập 4 repository secrets:
 
-Tạo keystore JKS của bạn và cất an toàn (đừng commit keystore hoặc mật khẩu vào repo). Thêm 4 **Actions secrets** trong repository:
-
-| Secret | Nội dung |
+| GitHub Actions secret | Giá trị |
 |---|---|
-| `ANDROID_KEYSTORE_BASE64` | Nội dung JKS mã hóa base64 một dòng |
-| `ANDROID_KEYSTORE_PASSWORD` | Mật khẩu kho khóa |
-| `ANDROID_KEY_ALIAS` | Tên alias |
-| `ANDROID_KEY_PASSWORD` | Mật khẩu của alias |
+| `ANDROID_KEYSTORE_BASE64` | Keystore JKS mã hóa base64 một dòng |
+| `ANDROID_KEYSTORE_PASSWORD` | Mật khẩu keystore |
+| `ANDROID_KEY_ALIAS` | Alias trong JKS |
+| `ANDROID_KEY_PASSWORD` | Mật khẩu alias |
 
-Ví dụ tạo khóa và lấy base64 trên máy cục bộ (JDK có `keytool`):
+Nếu đủ secrets, workflow build thêm **`RTSPDiagnostic-v0.2.1-release.apk`**. Giữ bí mật và sao lưu keystore; không commit file keystore vào GitHub. Để cài đè bản cũ cần **cùng applicationId và cùng khóa ký**, với versionCode mới tăng dần. Không thể cài đè APK debug bằng APK release có chữ ký khác — hãy xuất log trước khi gỡ app cũ.
 
-```bash
-keytool -genkeypair -keystore rtsp-release.jks -alias rtsp -keyalg RSA -keysize 3072 -validity 10000
-base64 -w0 rtsp-release.jks
-```
+## Kiểm tra khi VLC tự out
 
-Khi có đủ bốn secrets, workflow **tự tạo thêm** `RTSPDiagnostic-v0.2.0-release.apk` đã ký. Chỉ bản release dùng **cùng keystore + alias + applicationId** qua các phiên bản mới cài đè được ổn định. Với GitHub Actions có thể dùng `Settings → Secrets and variables → Actions` để thêm secrets.
+1. Trên ZTE 901ZT thử ban đầu: **Tắt âm thanh**, 15 FPS, **1 Mbps**, 1 client, tăng dần lên 5 client. Chỉ thay đổi **một thông số mỗi lần**.
+2. Đối chiếu **TCP vs UDP** trên các client có hỗ trợ chọn transport. Ghi IP từng client.
+3. Khi client vừa mất hình hay VLC thoát, bấm **Đánh dấu sự cố → chọn IP** (hoặc *Tất cả / không rõ*). Nếu server vẫn ghi `PLAY`, đó **không phải bằng chứng VLC đang chạy**.
+4. Mở **Nhật ký → Xuất ZIP**, gửi file khi cần phân tích. Ghi thêm giờ client thực sự thoát, giao thức, cấu hình âm thanh, có client nào còn xem được không.
+5. Xem [Hướng dẫn đọc log](docs/TROUBLESHOOTING.md).
 
-## Cách sử dụng và phân tích sự cố
+**Diễn giải log:**
 
-- Kết nối máy phát và các client vào cùng Wi-Fi/LAN, tắt cô lập client trên AP nếu có.
-- Mở RTSP Diagnostic, thử trước **Tắt âm thanh**, 720p/20fps/2Mbps và 1–2 client, sau đó tăng lên 5.
-- Bấm Phát, chấp thuận chia sẻ màn hình. VLC mở URL hiển thị (VD `rtsp://192.168.1.5:8554/live`). Trong VLC ưu tiên thử RTP over RTSP (TCP).
-- Khi mất hình/đóng VLC, bấm **Đánh dấu client vừa bị thoát** rồi mở **Nhật ký và xuất ZIP**, lưu lại file. Chụp/ghi nhận giờ chính xác và IP client.
-- Nếu muốn truyền âm thanh, cấp quyền micro và chọn **Micro** hoặc **Âm thanh ứng dụng** (chỉ Android 10+), sau đó khởi động lại phiên. Kiểm tra xem VLC có chọn cả hai track không.
+- `RTCP_RR`: nhận được báo cáo chất lượng từ phía client; loss, jitter chỉ đáng tin theo **khoảng báo cáo và track tương ứng**, không phải đo trực tiếp chất lượng hình hiển thị.
+- `PLAY_UNCONFIRMED`: trạng thái RTSP còn PLAY nhưng **không có xác nhận nhận/giải mã**; không kết luận client bị out.
+- `TCP_WRITE_STALL`: một lần ghi socket TCP bị kẹt trên 12 giây, server đóng socket để tránh chiếm tài nguyên.
+- `ENCODER_STALL`, `VIDEO_KEYFRAME`, `maxPtsGapMs`: phân tích cung cấp khung hình từ encoder.
+- `PORT_IN_USE`: cổng 8554 đang được tiến trình khác sử dụng, không phải lỗi mất kết nối khi đang phát.
+- `CLIENT DISCONNECT`: xem `reason=RTSP socket EOF`, `client TEARDOWN` hay `RTP send failure`; đóng từ socket không tự xác định được nguyên nhân gốc ở VLC hay Wi-Fi.
 
-## Giới hạn hiện tại
+### Giới hạn đã biết
 
-- Có RTCP Sender Reports cơ bản mỗi 5 giây, nhưng chưa có phân tích RTCP Receiver Reports, xác thực RTSP, TLS, phục hồi Wi-Fi/IP tự động, tái cấu hình khi xoay màn hình, trộn âm thanh, tự nối lại phía VLC hoặc kiểm thử tương thích mọi Android.
-- Thu âm nội bộ có thể bị nguồn phát giới hạn theo chính sách Android; không thể buộc thu âm ứng dụng từ chối.
-- Thành công khi `DatagramSocket.send` không đồng nghĩa gói UDP đã tới client, và gửi TCP thành công không chứng minh VLC đã giải mã khung hình.
-- Khi MediaProjection bị hủy, ứng dụng cần người dùng cho phép chia sẻ màn hình lại. Dịch vụ và log cố gắng dọn tài nguyên an toàn.
-- APK debug dùng để chẩn đoán trên LAN, không nên coi là bản sản phẩm đã kiểm định.
+- RTP/RTSP mặc định **không có TLS và không có đăng nhập**: chỉ dùng LAN tin cậy, **không chuyển tiếp cổng 8554 ra Internet**.
+- RTCP RR không phải mọi client đều gửi; RTCP RR **không xác nhận VLC giải mã được video**, chỉ phản ánh bộ đếm và thống kê mà bên nhận báo cáo.
+- Android 9 chưa có API `KEY_MAX_FPS_TO_ENCODER` nên FPS thực tế có thể lớn hơn cấu hình. `KEY_REPEAT_PREVIOUS_FRAME_AFTER` chỉ yêu cầu lặp **một lần** khi nguồn đứng yên và tùy vendor.
+- Không có cách ép âm thanh nội bộ trên Android 9 hay ép ứng dụng nguồn chống ghi lại phải xuất âm thanh.
+- Chưa hỗ trợ xác thực RTSP, RTSP over TLS, RTP retransmission, RTCP NACK/PLI, tự reconnect từ VLC, hard cap FPS Android 9 hoặc chẩn đoán lỗi decoder phía VLC.
+- Trên Android hiện đại, MediaProjection thường cần người dùng chấp thuận lại khi khởi tạo phiên mới. Các ROM tương lai có thể thêm hạn chế nền/quyền mới.
 
-## Bố cục
+## Cấu trúc repo
 
-```
-.github/workflows/android-apk.yml      # Test/build/release APK
-app/build.gradle                        # Min API 26; target API 35; version + file APK
+```text
+.github/workflows/android-apk.yml  # github build/test/release - setup-android@v4
+app/build.gradle                   # versionCode=3, versionName=0.2.1
 app/src/main/AndroidManifest.xml
 app/src/main/java/com/example/screenstreamdiag/
-    MainActivity.java                    # One-view, các phần mở/đóng, xuất ZIP
-    CaptureService.java                  # MediaProjection, H.264, foreground service
-    AudioEngine.java                     # AudioRecord + AAC encoder
-    RtspServer.java                      # RTSP, SDP, RTP video/audio, client logging
-    AacRtp.java                          # AAC-hbr RTP payload
-    H264.java
-    DeviceInspector.java
-    DiagnosticLog.java
-app/src/main/res/...                    # Icon mới + notification icon
-app/src/test/...                        # H.264 và AAC unit tests
+  MainActivity.java                # giao diện một màn hình, 4 mục thu gọn, đánh dấu IP
+  CaptureService.java              # MediaProjection, MediaCodec H.264, foreground service
+  AudioEngine.java                 # AAC micro / playback (Android 10+)
+  RtspServer.java                  # RTSP, RTP TCP/UDP, RTCP SR/RR, watchdog
+  Rtcp.java                        # parser báo cáo RTCP RR thuần Java
+  AacRtp.java                      # AAC AU RTP
+  H264.java                        # NAL parser
+  DeviceInspector.java             # kiểm tra Android và cảnh báo
+  DiagnosticLog.java               # log xoay vòng, xuất ZIP
+app/src/test/...                   # unit tests H.264 / AAC / RTCP
+ tools/rtsp-smoke.sh               # biên dịch và kiểm thử RTSP qua Java 17
+ tools/RtspSmoke.java
+ docs/TROUBLESHOOTING.md
 ```
 
-### Yêu cầu đối với bản phát hành mới
-
-Khi tăng version, cập nhật `versionCode` (tăng dần) và `versionName` trong `app/build.gradle`. Workflow tự đọc `versionName` để đặt tên artifact và kiểm tra Git tag trùng `v<versionName>`. Tên APK luôn có dạng **tên app + phiên bản + biến thể**.
-
-MIT License. Dự án này không liên kết với đội ngũ phát triển ScreenStream gốc.
+MIT License. Không liên kết đội ngũ ScreenStream gốc.

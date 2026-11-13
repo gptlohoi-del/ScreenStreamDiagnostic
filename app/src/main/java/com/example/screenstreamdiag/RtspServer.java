@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** RTSP 1.0 server with optional H264 video track (0) and MPEG4-GENERIC/AAC track (1).
  * Each RTSP connection has independent RTP transports, bounded buffers and diagnostic counters.
- * LAN only. No authentication, encryption, or RTCP sender-reports in this experimental version.
+ * LAN only. No authentication or encryption. Includes RTCP SR and incoming RR diagnostics.
  */
 public final class RtspServer {
     public static final int PORT=8554, MAX_CLIENTS=5;
@@ -25,7 +25,7 @@ public final class RtspServer {
     private volatile boolean running;
     private volatile byte[] sps,pps;
     private ServerSocket listener;
-    private Thread acceptThread;
+    private Thread acceptThread, watchdogThread;
     private static final class VideoFrame {
         final List<byte[]> nals; final boolean key; final long ptsUs;
         VideoFrame(List<byte[]> n,boolean k,long p){nals=n;key=k;ptsUs=p;}
@@ -42,8 +42,15 @@ public final class RtspServer {
         String ip=DeviceInspector.wifiIpv4();
         if("0.0.0.0".equals(ip))throw new IOException("Không tìm thấy IP Wi-Fi/hotspot");
         listener=new ServerSocket();listener.setReuseAddress(true);
-        listener.bind(new InetSocketAddress(ip,PORT));running=true;
+        try {listener.bind(new InetSocketAddress(ip,PORT));}
+        catch(BindException e) {
+            try{listener.close();}catch(IOException ignored){}
+            DiagnosticLog.event("RTSP","PORT_IN_USE ip="+ip+" port="+PORT+" (possibly another server or previous instance)");
+            throw new IOException("Cổng RTSP "+PORT+" đang bị chiếm. Đóng app dùng cổng này rồi thử lại.",e);
+        }
+        running=true;
         acceptThread=new Thread(this::acceptLoop,"rtsp-accept");acceptThread.start();
+        watchdogThread=new Thread(this::watchdogLoop,"rtsp-watchdog");watchdogThread.setDaemon(true);watchdogThread.start();
         DiagnosticLog.event("RTSP","LISTEN "+ip+":"+PORT+" audio="+audioEnabled+" max="+MAX_CLIENTS);
     }
     public synchronized void stop(){
@@ -83,7 +90,14 @@ public final class RtspServer {
                     .append(" audioRtpPkts=").append(c.audio.packetCount.get())
                     .append(" drop=").append(c.dropped.get())
                     .append(" queue=").append(c.queue.size()).append(" waitingKey=").append(c.waitKey)
-                    .append(" lastVideoSendAgoMs=").append(SystemClock.elapsedRealtime()-c.video.lastSendMs);
+                    .append(" lastVideoSendAgoMs=").append(c.video.packetCount.get()==0?"never":SystemClock.elapsedRealtime()-c.video.lastSendMs)
+                    .append(" rtcpVideoReports=").append(c.video.rtcpReports.get())
+                    .append(" rtcpAudioReports=").append(c.audio.rtcpReports.get())
+                    .append(" lastVideoRRAgoMs=").append(c.video.lastRtcpRxMs==0?"never":SystemClock.elapsedRealtime()-c.video.lastRtcpRxMs)
+                    .append(" videoRRLossFraction=").append(c.video.lastLossFraction)
+                    .append(" videoRRJitterMs=").append(c.video.lastJitterMs)
+                    .append(" rtspControlIdleMs=").append(SystemClock.elapsedRealtime()-c.lastControlMs)
+                    .append(" tcpWriteMs=").append(c.tcpWriteStartMs==0?0:SystemClock.elapsedRealtime()-c.tcpWriteStartMs);
         }
         return s.toString();
     }
@@ -91,12 +105,20 @@ public final class RtspServer {
         while(running){
             try{
                 Socket socket=listener.accept();socket.setKeepAlive(true);socket.setTcpNoDelay(true);
+                socket.setSoTimeout(5000);
                 if(clients.size()>=MAX_CLIENTS){
                     DiagnosticLog.event("RTSP","REJECT max-clients ip="+socket.getInetAddress().getHostAddress());
                     socket.close();continue;
                 }
                 Client c=new Client(socket);clients.add(c);c.start();
             }catch(IOException e){if(running)DiagnosticLog.event("RTSP","accept error="+e);}
+        }
+    }
+    private void watchdogLoop(){
+        while(running){
+            try {Thread.sleep(2000);}catch(InterruptedException e){Thread.currentThread().interrupt();return;}
+            long now=SystemClock.elapsedRealtime();
+            for(Client c:clients)c.checkWriteHealth(now);
         }
     }
     private String sdp(){
@@ -123,6 +145,7 @@ public final class RtspServer {
         final AtomicLong dropped=new AtomicLong();
         volatile boolean closed,waitKey=true;
         volatile long lastOverflowLogMs,lastWaitingLogMs,playAtMs;
+        volatile long lastControlMs=SystemClock.elapsedRealtime(),lastNoFeedbackLogMs,tcpWriteStartMs;
         volatile boolean sentFirstKey;
         Thread reader,sender;
         Client(Socket sock){socket=sock;ip=sock.getInetAddress().getHostAddress();}
@@ -136,7 +159,9 @@ public final class RtspServer {
             try{
                 InputStream in=new BufferedInputStream(socket.getInputStream());
                 while(!closed){
-                    String request=readLine(in);
+                    String request;
+                    try { request=readLine(in); }
+                    catch(SocketTimeoutException timeout) {checkSessionHealth();continue;}
                     if(request==null)break;
                     if(request.isEmpty()||"$".equals(request))continue;
                     String[] first=request.split(" ");
@@ -150,6 +175,7 @@ public final class RtspServer {
                     int length=parseInt(headers.get("content-length"),0);
                     if(length<0||length>65536)throw new IOException("Bad RTSP body length");
                     while(length-->0)if(in.read()<0)throw new EOFException();
+                    lastControlMs=SystemClock.elapsedRealtime();
                     String cseq=headers.getOrDefault("cseq","0");
                     DiagnosticLog.event("RTSP","REQUEST ip="+ip+" session="+sessionId+" method="+method+" cseq="+cseq+" url="+url);
                     switch(method){
@@ -171,6 +197,9 @@ public final class RtspServer {
                             video.playing=video.configured;audio.playing=audio.configured;
                             queue.clear();waitKey=true;sentFirstKey=false;playAtMs=SystemClock.elapsedRealtime();
                             video.lastRtcpMs=playAtMs;audio.lastRtcpMs=playAtMs;
+                            video.lastRtcpRxMs=0;audio.lastRtcpRxMs=0;
+                            video.rtcpReports.set(0);audio.rtcpReports.set(0);
+                            video.lastLossFraction=-1;audio.lastLossFraction=-1;
                             startSender();if(video.playing && requestKeyframe!=null)requestKeyframe.run();
                             DiagnosticLog.event("CLIENT","PLAY ip="+ip+" session="+sessionId+" video="+video.mode()+" audio="+audio.mode());
                             break;
@@ -180,7 +209,10 @@ public final class RtspServer {
                             respond(200,"OK",cseq,"Session: "+sessionId+"\r\n",null);
                             DiagnosticLog.event("CLIENT","PAUSE ip="+ip+" session="+sessionId);break;
                         }
-                        case "GET_PARAMETER":case "SET_PARAMETER":respond(200,"OK",cseq,"Session: "+sessionId+"\r\n",null);break;
+                        case "GET_PARAMETER":case "SET_PARAMETER":
+                            respond(200,"OK",cseq,"Session: "+sessionId+"\r\n",null);
+                            DiagnosticLog.event("CLIENT","RTSP_KEEPALIVE ip="+ip+" session="+sessionId+" method="+method);
+                            break;
                         case "TEARDOWN":{
                             respond(200,"OK",cseq,"Session: "+sessionId+"\r\n",null);
                             closeReason="client TEARDOWN";return;
@@ -222,16 +254,81 @@ public final class RtspServer {
                 respond(200,"OK",cseq,"Transport: RTP/AVP;unicast;client_port="+port+"-"+rtcpPort+
                         ";server_port="+track.rtp.getLocalPort()+"-"+track.rtcp.getLocalPort()+
                         ";ssrc="+String.format(Locale.US,"%08x",track.ssrc)+"\r\nSession: "+sessionId+";timeout=60\r\n",null);
+                startRtcpReceiver(track);
             }
             DiagnosticLog.event("CLIENT","SETUP ip="+ip+" session="+sessionId+" track="+track.id+" transport="+track.mode());
         }
         void respond(int code,String reason,String cseq,String extra,String body)throws IOException {
             byte[] data=body==null?new byte[0]:body.getBytes(StandardCharsets.UTF_8);
-            String h="RTSP/1.0 "+code+" "+reason+"\r\nCSeq: "+cseq+"\r\nServer: RTSPDiagnostic/0.2\r\n"+
+            String h="RTSP/1.0 "+code+" "+reason+"\r\nCSeq: "+cseq+"\r\nServer: RTSPDiagnostic/0.2.1\r\n"+
                     (extra==null?"":extra)+"Content-Length: "+data.length+"\r\n\r\n";
             synchronized(writeLock){
-                OutputStream out=socket.getOutputStream();out.write(h.getBytes(StandardCharsets.US_ASCII));
-                if(data.length>0)out.write(data);out.flush();
+                tcpWriteStartMs=SystemClock.elapsedRealtime();
+                try{
+                    OutputStream out=socket.getOutputStream();out.write(h.getBytes(StandardCharsets.US_ASCII));
+                    if(data.length>0)out.write(data);out.flush();
+                }finally{tcpWriteStartMs=0;}
+            }
+        }
+        void checkSessionHealth(){
+            long now=SystemClock.elapsedRealtime();
+            if(!playing() && now-lastControlMs>90000){
+                DiagnosticLog.event("CLIENT","IDLE_RTSP_CLOSE ip="+ip+" session="+sessionId);
+                close("inactive control session >90s");return;
+            }
+            if(playing() && now-playAtMs>60000 && now-lastNoFeedbackLogMs>30000){
+                lastNoFeedbackLogMs=now;
+                DiagnosticLog.event("CLIENT","PLAY_UNCONFIRMED ip="+ip+" session="+sessionId+
+                    " rtspIdleMs="+(now-lastControlMs)+
+                    " videoRtcpReports="+video.rtcpReports.get()+
+                    " audioRtcpReports="+audio.rtcpReports.get()+
+                    " lastVideoRRAgoMs="+(video.lastRtcpRxMs==0?"never":now-video.lastRtcpRxMs)+
+                    " note=PLAY/send does not prove VLC playback; no forced disconnect without evidence");
+            }
+        }
+        void checkWriteHealth(long now){
+            long begin=tcpWriteStartMs;
+            if(!closed && begin>0 && now-begin>12000){
+                DiagnosticLog.event("CLIENT","TCP_WRITE_STALL ip="+ip+" session="+sessionId+
+                        " blockedMs="+(now-begin)+" (closing stuck socket)");
+                close("TCP writer blocked >12s");
+            }
+        }
+        void startRtcpReceiver(Track track){
+            if(track.tcp || track.rtcp==null)return;
+            try{track.rtcp.setSoTimeout(1500);}catch(SocketException e){
+                DiagnosticLog.event("RTCP","SOCKET_TIMEOUT_ERROR ip="+ip+" "+e);return;
+            }
+            Thread worker=new Thread(()->{
+                byte[] buffer=new byte[4096];
+                while(!closed && track.configured && !track.rtcp.isClosed()){
+                    try{
+                        DatagramPacket packet=new DatagramPacket(buffer,buffer.length);
+                        track.rtcp.receive(packet);
+                        if(!socket.getInetAddress().equals(packet.getAddress())){
+                            DiagnosticLog.event("RTCP","FOREIGN_PACKET_IGNORED session="+sessionId);continue;
+                        }
+                        onRtcp(track,packet.getData(),packet.getLength(),"UDP");
+                    }catch(SocketTimeoutException ignored){}
+                    catch(SocketException e){if(!closed)DiagnosticLog.event("RTCP","RECEIVER_STOP "+e);break;}
+                    catch(IOException e){if(!closed)DiagnosticLog.event("RTCP","RECEIVER_ERROR "+e);}
+                }
+            },"rtcp-rx-"+sessionId+"-"+track.id);
+            worker.setDaemon(true);worker.start();
+        }
+        void onRtcp(Track track,byte[] payload,int length,String via){
+            for(Rtcp.ReceiverReport report:Rtcp.receiverReports(payload,length,track.ssrc&0xffffffffL)){
+                long now=SystemClock.elapsedRealtime();
+                track.lastRtcpRxMs=now;
+                track.rtcpReports.incrementAndGet();
+                track.lastLossFraction=report.fractionLost;
+                int rate=track.id==0?90000:AudioEngine.RATE;
+                track.lastJitterMs=Math.round(report.jitter*1000.0/rate);
+                if(now-track.lastRtcpLogMs>=5000 || track.rtcpReports.get()==1){
+                    track.lastRtcpLogMs=now;
+                    DiagnosticLog.event("RTCP_RR","ip="+ip+" session="+sessionId+" track="+track.id+
+                            " via="+via+" "+report.compact(rate));
+                }
             }
         }
         void enqueueVideo(VideoFrame f){
@@ -332,10 +429,7 @@ public final class RtspServer {
             put32(b,16,t.lastRtpTimestamp);
             put32(b,20,t.packetCount.get());put32(b,24,t.octets.get());
             if(t.tcp){
-                synchronized(writeLock){
-                    OutputStream out=socket.getOutputStream();out.write('$');out.write(t.channel+1);
-                    out.write(0);out.write(b.length);out.write(b);
-                }
+                writeInterleaved(t.channel+1,b);
             } else if(t.rtcp!=null){
                 t.rtcp.send(new DatagramPacket(b,b.length,socket.getInetAddress(),t.rtcpPort));
             }
@@ -353,10 +447,7 @@ public final class RtspServer {
             pkt[8]=(byte)(track.ssrc>>>24);pkt[9]=(byte)(track.ssrc>>>16);pkt[10]=(byte)(track.ssrc>>>8);pkt[11]=(byte)track.ssrc;
             System.arraycopy(payload,0,pkt,12,payload.length);
             if(track.tcp){
-                synchronized(writeLock){
-                    OutputStream out=socket.getOutputStream();out.write('$');out.write(track.channel);
-                    out.write((pkt.length>>>8)&255);out.write(pkt.length&255);out.write(pkt);
-                }
+                writeInterleaved(track.channel,pkt);
             }else if(track.rtp!=null){
                 track.rtp.send(new DatagramPacket(pkt,pkt.length,socket.getInetAddress(),track.port));
             }else throw new IOException("RTP transport not initialized");
@@ -364,12 +455,31 @@ public final class RtspServer {
             track.packetCount.incrementAndGet();track.octets.addAndGet(payload.length);
             track.lastRtpTimestamp=ts;track.lastSendMs=SystemClock.elapsedRealtime();
         }
+        void writeInterleaved(int channel,byte[] payload)throws IOException {
+            if(payload.length>65535)throw new IOException("Oversized interleaved RTP/RTCP frame");
+            synchronized(writeLock){
+                tcpWriteStartMs=SystemClock.elapsedRealtime();
+                try{
+                    OutputStream out=socket.getOutputStream();out.write('$');out.write(channel);
+                    out.write((payload.length>>>8)&255);out.write(payload.length&255);out.write(payload);
+                }finally{tcpWriteStartMs=0;}
+            }
+        }
         String readLine(InputStream in)throws IOException {
             int first=in.read();if(first<0)return null;
             if(first=='$'){
                 int ch=in.read(),hi=in.read(),lo=in.read();if(ch<0||hi<0||lo<0)throw new EOFException();
-                int left=(hi<<8)|lo;
-                while(left>0){long skipped=in.skip(left);if(skipped<=0){if(in.read()<0)throw new EOFException();skipped=1;}left-=skipped;}
+                int len=(hi<<8)|lo;
+                if(len>4096){
+                    int left=len;
+                    while(left>0){long skipped=in.skip(left);if(skipped<=0){if(in.read()<0)throw new EOFException();skipped=1;}left-=skipped;}
+                    DiagnosticLog.event("RTCP","OVERSIZED_INTERLEAVED_IGNORED ip="+ip+" size="+len);
+                }else{
+                    byte[] payload=new byte[len];int got=0;
+                    while(got<len){int read=in.read(payload,got,len-got);if(read<0)throw new EOFException();got+=read;}
+                    if(video.configured && video.tcp && ch==video.channel+1)onRtcp(video,payload,len,"TCP");
+                    else if(audio.configured && audio.tcp && ch==audio.channel+1)onRtcp(audio,payload,len,"TCP");
+                }
                 return "$";
             }
             ByteArrayOutputStream b=new ByteArrayOutputStream();b.write(first);
@@ -394,6 +504,9 @@ public final class RtspServer {
         final AtomicLong bytes=new AtomicLong(),packetCount=new AtomicLong(),octets=new AtomicLong();
         volatile boolean configured,playing,tcp;
         volatile long lastSendMs=SystemClock.elapsedRealtime(),lastRtcpMs;
+        volatile long lastRtcpRxMs,lastRtcpLogMs,lastJitterMs;
+        volatile int lastLossFraction=-1;
+        final AtomicLong rtcpReports=new AtomicLong();
         volatile long lastRtpTimestamp;
         int channel,port,rtcpPort,seq;
         DatagramSocket rtp,rtcp;

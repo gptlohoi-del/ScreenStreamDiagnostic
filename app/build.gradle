@@ -7,8 +7,8 @@ android {
         applicationId 'com.example.screenstreamdiag'
         minSdk 26 // Android 8+; primary device Android 9 (API 28)
         targetSdk 35
-        versionCode 2
-        versionName '0.2.0'
+        versionCode 3
+        versionName '0.2.1'
     }
     buildFeatures { buildConfig true }
     signingConfigs {

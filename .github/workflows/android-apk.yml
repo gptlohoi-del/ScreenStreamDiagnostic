@@ -46,6 +46,9 @@ jobs:
           fi
           echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      - name: JVM RTSP smoke test
+        run: bash tools/rtsp-smoke.sh
+
       - name: Unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
 

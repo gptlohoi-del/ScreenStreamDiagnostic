@@ -138,7 +138,10 @@ public final class CaptureService extends Service {
         format.setInteger(MediaFormat.KEY_BIT_RATE,bitrate);
         format.setInteger(MediaFormat.KEY_FRAME_RATE,fps);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,2);
-        // Surface-input codec repeats the last frame when the screen is static; device support varies.
+        // Optional platform controls. Android 10+ exposes an upper input-FPS hint.
+        // This is not available on Android 9. Do NOT drop encoded P-frames to fake an FPS cap.
+        if(Build.VERSION.SDK_INT>=29)format.setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER,(float)fps);
+        // Vendor support varies; this requests ONE repeat after a gap, not a periodic heartbeat.
         format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,500000L);
         codec=MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         DiagnosticLog.event("ENCODER","Selected encoder="+codec.getName());
@@ -146,8 +149,8 @@ public final class CaptureService extends Service {
             codec.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);
         } catch(Exception optionalRepeatUnsupported) {
             // Some Android 9 vendors reject the optional repeat-last-frame setting.
-            DiagnosticLog.event("ENCODER","REPEAT_PREVIOUS_FRAME_UNSUPPORTED "+optionalRepeatUnsupported+
-                    "; retrying without optional repeat config");
+            DiagnosticLog.event("ENCODER","OPTIONAL_ENCODER_KEYS_UNSUPPORTED "+optionalRepeatUnsupported+
+                    "; retrying without max-fps / repeat config");
             codec.reset();
             MediaFormat fallback=MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC,currentWidth,currentHeight);
             fallback.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
@@ -247,8 +250,8 @@ public final class CaptureService extends Service {
     private void drainEncoder() {
         MediaCodec.BufferInfo info=new MediaCodec.BufferInfo();
         long lastReport=SystemClock.elapsedRealtime();
-        long frames=0,totalBytes=0;
-        long lastFrame=SystemClock.elapsedRealtime();
+        long frames=0,totalBytes=0,keyframes=0,maxEncodedGapMs=0;
+        long lastFrame=SystemClock.elapsedRealtime(),previousPtsUs=-1,lastKeyPtsUs=-1;
         int errors=0;
         try {
             while(streaming) {
@@ -273,7 +276,21 @@ public final class CaptureService extends Service {
                         }
                         server.setCodecConfig(sps,pps);
                         if(!video.isEmpty()) {
-                            server.broadcast(video,key,info.presentationTimeUs);
+                            long pt=info.presentationTimeUs;
+                            if(previousPtsUs>=0) {
+                                long difference=pt-previousPtsUs;
+                                if(difference<0) DiagnosticLog.event("ENCODER","PTS_BACKWARD old="+previousPtsUs+" new="+pt);
+                                else maxEncodedGapMs=Math.max(maxEncodedGapMs,difference/1000);
+                            }
+                            previousPtsUs=pt;
+                            if(key) {
+                                keyframes++;
+                                DiagnosticLog.event("ENCODER","VIDEO_KEYFRAME ptsUs="+pt+
+                                        " sinceLastKeyMs="+(lastKeyPtsUs<0?"first":(pt-lastKeyPtsUs)/1000)+
+                                        " sizeBytes="+info.size);
+                                lastKeyPtsUs=pt;
+                            }
+                            server.broadcast(video,key,pt);
                             frames++;totalBytes+=info.size;
                             lastFrame=SystemClock.elapsedRealtime();
                         }
@@ -283,8 +300,8 @@ public final class CaptureService extends Service {
                 long now=SystemClock.elapsedRealtime();
                 if(now-lastReport>=10000) {
                     double duration=(now-lastReport)/1000.0;
-                    String detail=String.format(Locale.US,"fps=%.1f encodedKbps=%.0f frames=%d lastFrameAgoMs=%d uptimeSec=%d ip=%s",
-                            frames/duration,totalBytes*8.0/duration/1000,frames,now-lastFrame,
+                    String detail=String.format(Locale.US,"fps=%.1f encodedKbps=%.0f frames=%d keyframes=%d maxPtsGapMs=%d lastFrameAgoMs=%d uptimeSec=%d ip=%s",
+                            frames/duration,totalBytes*8.0/duration/1000,frames,keyframes,maxEncodedGapMs,now-lastFrame,
                             (now-startedAt)/1000,DeviceInspector.localIpv4());
                     latestClients=server.statistics();
                     DiagnosticLog.event("HEALTH",detail+" "+latestClients.replace('\n',';'));
@@ -305,7 +322,7 @@ public final class CaptureService extends Service {
                     if(audioEngine!=null && !audioEngine.isRunning())
                         DiagnosticLog.event("AUDIO_STALL","Audio capture thread not running; check RECORD_AUDIO/ROM restrictions");
                     status="Đang phát: "+server.playingCount()+" client; " +currentWidth+"x"+currentHeight;
-                    frames=0;totalBytes=0;lastReport=now;
+                    frames=0;totalBytes=0;keyframes=0;maxEncodedGapMs=0;lastReport=now;
                 }
             }
         } catch (Exception e) {
