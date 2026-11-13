@@ -1,6 +1,9 @@
 package com.example.screenstreamdiag;
 
 import android.app.KeyguardManager;
+import android.app.NotificationManager;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
@@ -94,6 +97,13 @@ public final class DeviceInspector {
                 s.append("[CẢNH BÁO] Ứng dụng chưa được miễn tối ưu pin; mở cài đặt pin để xem xét.\n"); warnings++;
             } else s.append("[OK] Ứng dụng được miễn tối ưu pin Android.\n");
             if (power.isDeviceIdleMode()) { s.append("[CẢNH BÁO] Doze đang hoạt động.\n"); warnings++; }
+            if (Build.VERSION.SDK_INT >= 29) {
+                int thermal = power.getCurrentThermalStatus();
+                s.append("Trạng thái nhiệt Android: ").append(thermal).append(" (0=không giới hạn, 4+=nghiêm trọng)\n");
+                if (thermal >= PowerManager.THERMAL_STATUS_SEVERE) {
+                    s.append("[CẢNH BÁO] Hệ thống đang hạn chế hiệu năng vì nhiệt.\n"); warnings++;
+                }
+            }
             if (!power.isInteractive()) { s.append("[LƯU Ý] Màn hình đang tắt; một số ROM có thể giới hạn chiếu màn hình.\n"); warnings++; }
         }
 
@@ -110,6 +120,21 @@ public final class DeviceInspector {
                     .append(". Có thể đang dùng hotspot hoặc mạng khác.\n"); warnings++;
         } else s.append("[OK] Mạng mặc định là Wi-Fi.\n");
 
+        if (cm != null && Build.VERSION.SDK_INT >= 24 &&
+                cm.getRestrictBackgroundStatus() == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED) {
+            s.append("[LƯU Ý] Trình tiết kiệm dữ liệu đang hạn chế dữ liệu nền (ảnh hưởng tùy loại mạng).\n"); warnings++;
+        }
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+            s.append("[THÔNG TIN] Chưa cấp quyền micro: chỉ ảnh hưởng khi chọn phát âm thanh.\n");
+        s.append("Âm thanh nội bộ: ").append(Build.VERSION.SDK_INT >= 29 ?
+                "Android hỗ trợ API, nhưng ứng dụng nguồn có thể cấm thu âm\n" :
+                "không hỗ trợ (cần Android 10+)\n");
+        if (Build.VERSION.SDK_INT >= 33) {
+            NotificationManager notificationManager=(NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (notificationManager != null && !notificationManager.areNotificationsEnabled()) {
+                s.append("[LƯU Ý] Thông báo ứng dụng bị tắt: cảnh báo có thể không hiển thị.\n");warnings++;
+            }
+        }
         WifiManager wifi = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wifi != null) {
             WifiInfo info = null;

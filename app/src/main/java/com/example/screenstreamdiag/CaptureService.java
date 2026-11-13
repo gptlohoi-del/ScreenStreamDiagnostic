@@ -20,7 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/** Foreground projection service designed for Android 9. No sound or screen recording. */
+/** Foreground screen capture service; Android 9+ with optional AAC audio track. */
 public final class CaptureService extends Service {
     public static final String START="com.example.screenstreamdiag.START";
     public static final String STOP="com.example.screenstreamdiag.STOP";
@@ -29,8 +29,10 @@ public final class CaptureService extends Service {
     public static final String EXTRA_FPS="fps";
     public static final String EXTRA_BITRATE="bitrate";
     public static final String EXTRA_SCALE="scale";
+    public static final String EXTRA_AUDIO="audio";
     public static volatile boolean isRunning;
     public static volatile String status = "Chưa phát";
+    private static volatile String latestClients="Chưa có client.";
     private static final String CHANNEL="rtsp_diagnostic_capture";
     private volatile boolean streaming;
     private MediaProjection projection;
@@ -38,6 +40,9 @@ public final class CaptureService extends Service {
     private VirtualDisplay virtualDisplay;
     private Surface inputSurface;
     private RtspServer server;
+    private AudioEngine audioEngine;
+    private long lastSyncRequest;
+    private volatile String selectedAudio=AudioEngine.NONE;
     private Thread encoderThread;
     private PowerManager.WakeLock cpuLock;
     private WifiManager.WifiLock wifiLock;
@@ -56,19 +61,28 @@ public final class CaptureService extends Service {
         DiagnosticLog.event("SERVICE","onCreate pid="+android.os.Process.myPid()+" Android="+Build.VERSION.SDK_INT);
     }
     @Override public int onStartCommand(Intent intent,int flags,int startId) {
-        startForeground(8,notification("Đang chuẩn bị phát RTSP"));
-        if (intent == null) {
-            DiagnosticLog.event("SERVICE","onStartCommand null intent; not restarting stale MediaProjection token");
-            stopSelf(); return START_NOT_STICKY;
+        if(intent==null){
+            DiagnosticLog.event("SERVICE","null START intent; token cannot be reused");
+            stopSelf();return START_NOT_STICKY;
         }
-        if (STOP.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
-        if (!START.equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
-        if (streaming) { DiagnosticLog.event("SERVICE","Ignoring duplicate START"); return START_NOT_STICKY; }
+        if(STOP.equals(intent.getAction())){stopSelf();return START_NOT_STICKY;}
+        if(!START.equals(intent.getAction())){stopSelf();return START_NOT_STICKY;}
+        if(streaming){DiagnosticLog.event("SERVICE","duplicate START ignored");return START_NOT_STICKY;}
+        selectedAudio=intent.getStringExtra(EXTRA_AUDIO);
+        if(!AudioEngine.MIC.equals(selectedAudio)&&!AudioEngine.PLAYBACK.equals(selectedAudio))selectedAudio=AudioEngine.NONE;
         int resultCode=intent.getIntExtra(EXTRA_RESULT_CODE,Activity.RESULT_CANCELED);
         Intent resultData=intent.getParcelableExtra(EXTRA_RESULT_DATA);
-        if (resultCode!=Activity.RESULT_OK || resultData==null) {
-            DiagnosticLog.event("SERVICE","MediaProjection permission data missing");
-            stopSelf(); return START_NOT_STICKY;
+        if(resultCode!=Activity.RESULT_OK || resultData==null){
+            DiagnosticLog.event("SERVICE","no valid MediaProjection consent token");stopSelf();return START_NOT_STICKY;
+        }
+        try {
+            if(Build.VERSION.SDK_INT>=29){
+                int types=android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+                if(Build.VERSION.SDK_INT>=30 && !AudioEngine.NONE.equals(selectedAudio))types|=android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+                startForeground(8,notification("Đang chuẩn bị phát RTSP"),types);
+            }else startForeground(8,notification("Đang chuẩn bị phát RTSP"));
+        }catch(Exception e){
+            DiagnosticLog.error("FOREGROUND_START_FAILED",e);stopSelf();return START_NOT_STICKY;
         }
         int fps=Math.max(10,Math.min(30,intent.getIntExtra(EXTRA_FPS,20)));
         int bitrate=Math.max(500000,Math.min(4000000,intent.getIntExtra(EXTRA_BITRATE,2000000)));
@@ -89,7 +103,7 @@ public final class CaptureService extends Service {
         PendingIntent stopAction=PendingIntent.getService(this,1,stop,
                 PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this,CHANNEL)
-                .setSmallIcon(android.R.drawable.presence_video_online)
+                .setSmallIcon(com.example.screenstreamdiag.R.drawable.ic_notification)
                 .setContentTitle("RTSP Diagnostic").setContentText(line)
                 .setContentIntent(click).setOngoing(true)
                 .addAction(new Notification.Action.Builder(android.R.drawable.ic_media_pause,"Dừng phát",stopAction).build())
@@ -124,24 +138,63 @@ public final class CaptureService extends Service {
         format.setInteger(MediaFormat.KEY_BIT_RATE,bitrate);
         format.setInteger(MediaFormat.KEY_FRAME_RATE,fps);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,2);
+        // Surface-input codec repeats the last frame when the screen is static; device support varies.
+        format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,500000L);
         codec=MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         DiagnosticLog.event("ENCODER","Selected encoder="+codec.getName());
-        codec.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);
+        try {
+            codec.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);
+        } catch(Exception optionalRepeatUnsupported) {
+            // Some Android 9 vendors reject the optional repeat-last-frame setting.
+            DiagnosticLog.event("ENCODER","REPEAT_PREVIOUS_FRAME_UNSUPPORTED "+optionalRepeatUnsupported+
+                    "; retrying without optional repeat config");
+            codec.reset();
+            MediaFormat fallback=MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC,currentWidth,currentHeight);
+            fallback.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            fallback.setInteger(MediaFormat.KEY_BIT_RATE,bitrate);
+            fallback.setInteger(MediaFormat.KEY_FRAME_RATE,fps);
+            fallback.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,2);
+            codec.configure(fallback,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);
+        }
         inputSurface=codec.createInputSurface();
         codec.start();
         virtualDisplay=projection.createVirtualDisplay("RTSP-DIAGNOSTIC",
                 currentWidth,currentHeight,metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,inputSurface,null,null);
         if (virtualDisplay==null) throw new IllegalStateException("VirtualDisplay null");
-        server=new RtspServer(); server.start();
+        // Prepare audio before advertising its SDP track. Fall back to video-only if unsupported.
+        if(!AudioEngine.NONE.equals(selectedAudio)) {
+            try {
+                audioEngine=new AudioEngine(this,projection,selectedAudio,(aac,pts)->{
+                    RtspServer live=server;if(live!=null)live.broadcastAudio(aac,pts);
+                });
+            }catch(Exception e){
+                DiagnosticLog.error("AUDIO_INIT_FAILED",e);
+                DiagnosticLog.event("AUDIO","FALLBACK video-only (audio requested but unavailable)");
+                audioEngine=null;
+            }
+        }
+        server=new RtspServer(audioEngine!=null,this::requestSyncFrame);
+        server.start();
+        if(audioEngine!=null)audioEngine.start();
         acquireLocks(); registerNetworkMonitor();
         startedAt=SystemClock.elapsedRealtime();
         getSharedPreferences("diag_state",MODE_PRIVATE).edit().putBoolean("session_active",true).commit();
         streaming=true;isRunning=true;
-        status="Đang phát "+currentWidth+"x"+currentHeight+" H.264";
+        status="Đang phát "+currentWidth+"x"+currentHeight+" H.264 / âm thanh: "+(audioEngine==null?"Tắt":selectedAudio);
         getSystemService(NotificationManager.class).notify(8,notification(status));
         encoderThread=new Thread(this::drainEncoder,"video-encoder-drain");encoderThread.start();
         DiagnosticLog.event("SERVICE","STREAM_STARTED url=rtsp://"+DeviceInspector.localIpv4()+":"+RtspServer.PORT+"/live");
+    }
+    private synchronized void requestSyncFrame() {
+        long now=SystemClock.elapsedRealtime();
+        if(now-lastSyncRequest<750 || codec==null || !streaming)return;
+        lastSyncRequest=now;
+        try {
+            Bundle params=new Bundle();params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME,0);
+            codec.setParameters(params);
+            DiagnosticLog.event("ENCODER","REQUEST_KEYFRAME triggered by RTSP client/recovery");
+        }catch(Exception e){DiagnosticLog.event("ENCODER","REQUEST_KEYFRAME_FAILED "+e);}
     }
     private void acquireLocks() {
         try {
@@ -233,7 +286,8 @@ public final class CaptureService extends Service {
                     String detail=String.format(Locale.US,"fps=%.1f encodedKbps=%.0f frames=%d lastFrameAgoMs=%d uptimeSec=%d ip=%s",
                             frames/duration,totalBytes*8.0/duration/1000,frames,now-lastFrame,
                             (now-startedAt)/1000,DeviceInspector.localIpv4());
-                    DiagnosticLog.event("HEALTH",detail+" "+server.statistics().replace('\n',';'));
+                    latestClients=server.statistics();
+                    DiagnosticLog.event("HEALTH",detail+" "+latestClients.replace('\n',';'));
                     DeviceInspector.Report report=DeviceInspector.inspect(this);
                     if(report.warnings>0)DiagnosticLog.event("DEVICE_WARNINGS",report.text.replace('\n',';'));
                     if (report.warnings > 0 && (report.warnings != lastWarningCount || now-lastWarningNotificationMs>120000)) {
@@ -244,7 +298,12 @@ public final class CaptureService extends Service {
                         getSystemService(NotificationManager.class).notify(8,notification("RTSP đang hoạt động"));
                     }
                     lastWarningCount=report.warnings;
-                    if(now-lastFrame>5000)DiagnosticLog.event("ENCODER_STALL","No video frame for "+(now-lastFrame)+" ms");
+                    if(now-lastFrame>5000){
+                        DiagnosticLog.event("ENCODER_STALL","No video frame for "+(now-lastFrame)+" ms (static screen or encoder stall)");
+                        requestSyncFrame();
+                    }
+                    if(audioEngine!=null && !audioEngine.isRunning())
+                        DiagnosticLog.event("AUDIO_STALL","Audio capture thread not running; check RECORD_AUDIO/ROM restrictions");
                     status="Đang phát: "+server.playingCount()+" client; " +currentWidth+"x"+currentHeight;
                     frames=0;totalBytes=0;lastReport=now;
                 }
@@ -259,12 +318,14 @@ public final class CaptureService extends Service {
         }
     }
     public static String summary() { return status; }
+    public static String clientSummary() { return latestClients; }
     @Override public void onDestroy() {
         DiagnosticLog.event("SERVICE","onDestroy; wasRunning="+streaming+
                 (server==null?"":" "+server.statistics().replace('\n',';')));
-        streaming=false;isRunning=false;
+        streaming=false;isRunning=false;latestClients="Đã dừng phát.";
         getSharedPreferences("diag_state",MODE_PRIVATE).edit().putBoolean("session_active",false).commit();
         if(server!=null){server.stop();server=null;}
+        if(audioEngine!=null){audioEngine.stop();audioEngine=null;}
         if(networkCallback!=null&&cm!=null)try{cm.unregisterNetworkCallback(networkCallback);}catch(Exception ignored){}
         networkCallback=null;
         if(virtualDisplay!=null){virtualDisplay.release();virtualDisplay=null;}

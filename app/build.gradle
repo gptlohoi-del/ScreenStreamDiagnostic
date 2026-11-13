@@ -3,23 +3,41 @@ plugins { id 'com.android.application' }
 android {
     namespace 'com.example.screenstreamdiag'
     compileSdk 35
-
     defaultConfig {
         applicationId 'com.example.screenstreamdiag'
-        minSdk 26
-        targetSdk 32
-        versionCode 1
-        versionName '0.1.0'
+        minSdk 26 // Android 8+; primary device Android 9 (API 28)
+        targetSdk 35
+        versionCode 2
+        versionName '0.2.0'
+    }
+    buildFeatures { buildConfig true }
+    signingConfigs {
+        if (System.getenv('ANDROID_KEYSTORE_PATH')) {
+            published {
+                storeFile file(System.getenv('ANDROID_KEYSTORE_PATH'))
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
     }
     buildTypes {
         debug { minifyEnabled false }
-        release { minifyEnabled false }
+        release {
+            minifyEnabled false
+            if (System.getenv('ANDROID_KEYSTORE_PATH')) signingConfig signingConfigs.published
+        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
     testOptions { unitTests.returnDefaultValues = true }
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "RTSPDiagnostic-v${variant.versionName}-${variant.buildType.name}.apk"
+        }
+    }
 }
 
 dependencies { testImplementation 'junit:junit:4.13.2' }
